@@ -182,7 +182,11 @@ def noise_corrected(table, undirected = False, return_self_loops = False, calcul
       return table[["src", "trg", "nij", "score"]]
    table["kappa"] = table["n.."] / (table["ni."] * table["n.j"])
    table["score"] = ((table["kappa"] * table["nij"]) - 1) / ((table["kappa"] * table["nij"]) + 1)
-   table["var_prior_probability"] = (1 / (table["n.."] ** 2)) * (table["ni."] * table["n.j"] * (table["n.."] - table["ni."]) * (table["n.."] - table["n.j"])) / ((table["n.."] ** 2) * ((table["n.."] - 1)))
+   table["var_prior_log_probability"] = np.log(table["ni."]) + np.log(table["n.j"]) + \
+                                          np.log(table["n.."] - table["ni."]) + \
+                                          np.log(table["n.."] - table["n.j"]) - \
+                                          (4 * np.log(table["n.."])) - np.log(table["n.."] - 1)
+   table["var_prior_probability"] = np.exp(table["var_prior_log_probability"])
    table["alpha_prior"] = (((table["mean_prior_probability"] ** 2) / table["var_prior_probability"]) * (1 - table["mean_prior_probability"])) - table["mean_prior_probability"]
    table["beta_prior"] = (table["mean_prior_probability"] / table["var_prior_probability"]) * (1 - (table["mean_prior_probability"] ** 2)) - (1 - table["mean_prior_probability"])
    table["alpha_post"] = table["alpha_prior"] + table["nij"]
