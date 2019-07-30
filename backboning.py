@@ -1,3 +1,13 @@
+# Downloaded from http://www.michelecoscia.com/?page_id=287
+# Author: Michele Coscia
+# Paper - Disparity Filter: http://www.pnas.org/content/106/16/6483.full
+# Paper - Noise Corrected: Coscia & Neffke “Network Backboning with Noisy Data”, ICDE 2017
+#                          https://arxiv.org/pdf/1701.07336.pdf
+#
+# Modified slightly for use with this code base by ________________, August 2018
+#
+# to_pandas_edgelist & from_pandas_edgelist are a part of NetworkX, modified for version issues
+
 import sys, warnings
 import numpy as np
 import pandas as pd
@@ -5,7 +15,7 @@ import networkx as nx
 from collections import defaultdict
 from scipy.stats import binom
 
-def read(filename, column_of_interest, triangular_input = False, consider_self_loops = True, undirected = False, drop_zeroes = True, sep = "\t"):
+def read(filename, column_of_interest, column_source = "src", column_target = "trg", triangular_input = False, consider_self_loops = True, undirected = False, drop_zeroes = True, sep = "\t"):
    """Reads a field separated input file into the internal backboning format (a Pandas Dataframe).
    The input file should have three or more columns (default separator: tab).
    The input file must have a one line header with the column names.
@@ -28,8 +38,11 @@ def read(filename, column_of_interest, triangular_input = False, consider_self_l
    The parsed network data, the number of nodes in the network and the number of edges.
    """
    table = pd.read_csv(filename, sep = sep)
-   table = table[["src", "trg", column_of_interest]]
-   table.rename(columns = {column_of_interest: "nij"}, inplace = True)
+   if isinstance(column_of_interest, list):
+      table[column_of_interest[0][0]+"+"+column_of_interest[-1].split("+")[-1]] = table[column_of_interest].sum(axis=1)
+      column_of_interest = column_of_interest[0][0]+"+"+column_of_interest[-1].split("+")[-1]
+   table = table[[column_source, column_target, column_of_interest]]
+   table.rename(columns = {column_source: "src", column_target: "trg", column_of_interest: "nij"}, inplace = True)
    if drop_zeroes:
       table = table[table["nij"] > 0]
    if not consider_self_loops:
@@ -50,6 +63,17 @@ def read(filename, column_of_interest, triangular_input = False, consider_self_l
    else:
       return table, original_nodes, original_edges
 
+def from_nx(G):
+    if nx.__version__[0] == '1':
+        table = to_pandas_edgelist(G,source='src',target='trg')
+    elif nx.__version__[0] == '2':
+        table = nx.to_pandas_edgelist(G,source='src',target='trg')
+    table.rename(columns = {'weight': "nij"}, inplace = True)
+    table = table[['src', 'trg', 'nij']]
+    original_nodes = len(set(table["src"]) | set(table["trg"]))
+    original_edges = table.shape[0]
+    return table, original_nodes, original_edges
+
 def thresholding(table, threshold):
    """Reads a preprocessed edge table and returns only the edges supassing a significance threshold.
 
@@ -66,11 +90,50 @@ def thresholding(table, threshold):
    else:
       return table[table["score"] > threshold][["src", "trg", "nij", "score"]]
 
-def write(table, network, method, folder):
+def write(table, filename, column_of_interest = "nij", column_source = "src", column_target = "trg", sep = "\t"):
    if not table.empty and "src" in table:
-      table.to_csv("%s/%s_%s.csv" % (folder, network, method), sep = "\t", index = False)
+      table.rename(columns = {"src":column_source, "trg":column_target, "nij":column_of_interest}, inplace = True)
+      table.to_csv(filename, sep = sep, index = False)
    else:
       warnings.warn("Incorrect/empty output. Nothing written on disk", RuntimeWarning)
+
+def write_scores(table, filename, column_of_interest = "nij", column_source = "src", column_target = "trg", sep = "\t"):
+   table = table.copy()
+   if not table.empty and "src" in table:
+      if "sdev_cij" in table:
+         table["noise_corrected_score"] = table["score"]/table["sdev_cij"]
+         table["noise_corrected_pct"] = table["noise_corrected_score"].rank(pct=True)
+         table["score_pct"] = table["score"].rank(pct=True)
+         table["pct"] = table["nij"].rank(pct=True)
+         table = table[["src", "trg", "nij", "pct", "score", "score_pct", "noise_corrected_score", "noise_corrected_pct"]]
+      else:
+         table = table[["src", "trg", "nij", "pct", "score", "score_pct"]]
+      table.rename(columns = {"src":column_source, "trg":column_target, "nij":column_of_interest}, inplace = True)
+      table.to_csv(filename, sep = sep, index = False)
+   else:
+      warnings.warn("Incorrect/empty output. Nothing written on disk", RuntimeWarning)
+
+def write_scores_nx(table, edge_filter = None, column_of_interest = "weight", column_source = "source", column_target = "target"):
+   table = table.copy()
+   if edge_filter and edge_filter[0]==column_of_interest: edge_filter = ('nij',edge_filter[1])
+   if not edge_filter: edge_filter = ('nij',0)
+   if not table.empty and "src" in table:
+      if "sdev_cij" in table:
+         table["noise_corrected_score"] = table["score"]/table["sdev_cij"]
+         table["noise_corrected_pct"] = table["noise_corrected_score"].rank(pct=True)
+         table["score_pct"] = table["score"].rank(pct=True)
+         table["pct"] = table["nij"].rank(pct=True)
+         table = table[table[edge_filter[0]] > edge_filter[1]][["src", "trg", "nij", "pct", "score", "score_pct", "noise_corrected_score", "noise_corrected_pct"]]
+      else:
+         table = table[table[edge_filter[0]] > edge_filter[1]][["src", "trg", "nij", "pct", "score", "score_pct"]]
+      table.rename(columns = {"src":column_source, "trg":column_target, "nij":column_of_interest}, inplace = True)
+      if nx.__version__[0] == '1':
+         return from_pandas_edgelist(table, edge_attr=["weight","pct","score","score_pct","noise_corrected_score","noise_corrected_pct"])
+      elif nx.__version__[0] == '2':
+         return nx.from_pandas_edgelist(table, edge_attr=["weight","pct","score","score_pct","noise_corrected_score","noise_corrected_pct"], create_using=nx.DiGraph())
+   else:
+      warnings.warn("Incorrect/empty output. Nothing written on disk", RuntimeWarning)
+
 
 def stability_jac(table1, table2):
    table1_edges = set(zip(table1["src"], table1["trg"]))
@@ -96,12 +159,13 @@ def test_densities(table, start, end, step):
    onodes = len(set(table["src"]) | set(table["trg"]))
    oedges = table.shape[0]
    oavgdeg = (2.0 * oedges) / onodes
+   sys.stdout.write("threshold\tnodes\t% nodes\tedges\t% edges\tavg degree\t% avg degree\n")
    for s in steps:
       edge_table = thresholding(table, s)
       nodes = len(set(edge_table["src"]) | set(edge_table["trg"]))
       edges = edge_table.shape[0]
       avgdeg = (2.0 * edges) / nodes
-      yield (s, nodes, (100.0 * nodes) / onodes, edges, (100.0 * edges) / oedges, avgdeg, avgdeg / oavgdeg)
+      sys.stdout.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (s, nodes, (100.0 * nodes) / onodes, edges, (100.0 * edges) / oedges, avgdeg, avgdeg / oavgdeg))
 
 def noise_corrected(table, undirected = False, return_self_loops = False, calculate_p_value = False):
    sys.stderr.write("Calculating NC score...\n")
@@ -126,7 +190,7 @@ def noise_corrected(table, undirected = False, return_self_loops = False, calcul
    table["expected_pij"] = table["alpha_post"] / (table["alpha_post"] + table["beta_post"])
    table["variance_nij"] = table["expected_pij"] * (1 - table["expected_pij"]) * table["n.."]
    table["d"] = (1.0 / (table["ni."] * table["n.j"])) - (table["n.."] * ((table["ni."] + table["n.j"]) / ((table["ni."] * table["n.j"]) ** 2)))
-   table["variance_cij"] = table["variance_nij"] * (((2 * (table["kappa"] + (table["nij"] * table["d"]))) / (((table["kappa"] * table["nij"]) + 1) ** 2)) ** 2) 
+   table["variance_cij"] = table["variance_nij"] * (((2 * (table["kappa"] + (table["nij"] * table["d"]))) / (((table["kappa"] * table["nij"]) + 1) ** 2)) ** 2)
    table["sdev_cij"] = table["variance_cij"] ** .5
    if not return_self_loops:
       table = table[table["src"] != table["trg"]]
@@ -139,7 +203,7 @@ def doubly_stochastic(table, undirected = False, return_self_loops = False):
    table = table.copy()
    table2 = table.copy()
    original_nodes = len(set(table["src"]) | set(table["trg"]))
-   table = pd.pivot_table(table, values = "nij", index = "src", columns = "trg", aggfunc = "sum", fill_value = 0) + .001
+   table = pd.pivot_table(table, values = "nij", index = "src", columns = "trg", aggfunc = "sum", fill_value = 0)
    row_sums = table.sum(axis = 1)
    attempts = 0
    while np.std(row_sums) > 1e-12:
@@ -160,7 +224,7 @@ def doubly_stochastic(table, undirected = False, return_self_loops = False):
       edge = table.iloc[i]
       G.add_edge(edge["src"], edge["trg"], weight = edge["value"])
       i += 1
-   table = pd.melt(nx.to_pandas_adjacency(G).reset_index(), id_vars = "index")
+   table = pd.melt(nx.to_pandas_dataframe(G).reset_index(), id_vars = "index")
    table = table[table["value"] > 0]
    table.rename(columns = {"index": "src", "variable": "trg", "value": "cij"}, inplace = True)
    table["score"] = table["cij"]
@@ -199,7 +263,7 @@ def high_salience_skeleton(table, undirected = False, return_self_loops = False)
    table = table.copy()
    table["distance"] = 1.0 / table["nij"]
    nodes = set(table["src"]) | set(table["trg"])
-   G = nx.from_pandas_edgelist(table, source = "src", target = "trg", edge_attr = "distance", create_using = nx.DiGraph())
+   G = nx.from_pandas_dataframe(table, source = "src", target = "trg", edge_attr = "distance", create_using = nx.DiGraph())
    cs = defaultdict(float)
    for s in nodes:
       pred = defaultdict(list)
@@ -259,14 +323,174 @@ def maximum_spanning_tree(table, undirected = False):
    sys.stderr.write("Calculating MST score...\n")
    table = table.copy()
    table["distance"] = 1.0 / table["nij"]
-   G = nx.from_pandas_edgelist(table, source = "src", target = "trg", edge_attr = ["distance", "nij"])
+   G = nx.from_pandas_dataframe(table, source = "src", target = "trg", edge_attr = ["distance", "nij"])
    T = nx.minimum_spanning_tree(G, weight = "distance")
-   table2 = nx.to_pandas_edgelist(T)
-   table2 = table2[table2["nij"] > 0]
-   table2.rename(columns = {"source": "src", "target": "trg", "nij": "score"}, inplace = True)
+   table2 = pd.melt(nx.to_pandas_dataframe(T, weight = "nij").reset_index(), id_vars = "index")
+   table2 = table2[table2["value"] > 0]
+   table2.rename(columns = {"index": "src", "variable": "trg", "value": "cij"}, inplace = True)
+   table2["score"] = table2["cij"]
    table = table.merge(table2, on = ["src", "trg"])
    if undirected:
       table["edge"] = table.apply(lambda x: "%s-%s" % (min(x["src"], x["trg"]), max(x["src"], x["trg"])), axis = 1)
       table = table.drop_duplicates(subset = ["edge"])
       table = table.drop("edge", 1)
    return table[["src", "trg", "nij", "score"]]
+
+def to_pandas_edgelist(G, source='source', target='target', nodelist=None,
+                       dtype=None, order=None):
+    """Return the graph edge list as a Pandas DataFrame.
+
+    Parameters
+    ----------
+    G : graph
+        The NetworkX graph used to construct the Pandas DataFrame.
+
+    source : str or int, optional
+        A valid column name (string or iteger) for the source nodes (for the
+        directed case).
+
+    target : str or int, optional
+        A valid column name (string or iteger) for the target nodes (for the
+        directed case).
+
+    nodelist : list, optional
+       Use only nodes specified in nodelist
+
+    Returns
+    -------
+    df : Pandas DataFrame
+       Graph edge list
+
+    Examples
+    --------
+    >>> G = nx.Graph([('A', 'B', {'cost': 1, 'weight': 7}),
+    ...               ('C', 'E', {'cost': 9, 'weight': 10})])
+    >>> df = nx.to_pandas_edgelist(G, nodelist=['A', 'C'])
+    >>> df
+       cost source target  weight
+    0     1      A      B       7
+    1     9      C      E      10
+
+    """
+    import pandas as pd
+    if nodelist is None:
+        edgelist = G.edges(data=True)
+    else:
+        edgelist = G.edges(nodelist, data=True)
+    source_nodes = [s for s, t, d in edgelist]
+    target_nodes = [t for s, t, d in edgelist]
+    all_keys = set().union(*(d.keys() for s, t, d in edgelist))
+    edge_attr = {k: [d.get(k, float("nan")) for s, t, d in edgelist] for k in all_keys}
+    edgelistdict = {source: source_nodes, target: target_nodes}
+    edgelistdict.update(edge_attr)
+    return pd.DataFrame(edgelistdict)
+
+def from_pandas_edgelist(df, source='source', target='target', edge_attr=None):
+    """Return a graph from Pandas DataFrame containing an edge list.
+
+    The Pandas DataFrame should contain at least two columns of node names and
+    zero or more columns of node attributes. Each row will be processed as one
+    edge instance.
+
+    Note: This function iterates over DataFrame.values, which is not
+    guaranteed to retain the data type across columns in the row. This is only
+    a problem if your row is entirely numeric and a mix of ints and floats. In
+    that case, all values will be returned as floats. See the
+    DataFrame.iterrows documentation for an example.
+
+    Parameters
+    ----------
+    df : Pandas DataFrame
+        An edge list representation of a graph
+
+    source : str or int
+        A valid column name (string or iteger) for the source nodes (for the
+        directed case).
+
+    target : str or int
+        A valid column name (string or iteger) for the target nodes (for the
+        directed case).
+
+    edge_attr : str or int, iterable, True
+        A valid column name (str or integer) or list of column names that will
+        be used to retrieve items from the row and add them to the graph as edge
+        attributes. If `True`, all of the remaining columns will be added.
+
+    create_using : NetworkX graph
+        Use specified graph for result.  The default is Graph()
+
+    See Also
+    --------
+    to_pandas_edgelist
+
+    Examples
+    --------
+    Simple integer weights on edges:
+
+    >>> import pandas as pd
+    >>> import numpy as np
+    >>> r = np.random.RandomState(seed=5)
+    >>> ints = r.random_integers(1, 10, size=(3,2))
+    >>> a = ['A', 'B', 'C']
+    >>> b = ['D', 'A', 'E']
+    >>> df = pd.DataFrame(ints, columns=['weight', 'cost'])
+    >>> df[0] = a
+    >>> df['b'] = b
+    >>> df
+       weight  cost  0  b
+    0       4     7  A  D
+    1       7     1  B  A
+    2      10     9  C  E
+    >>> G = nx.from_pandas_edgelist(df, 0, 'b', ['weight', 'cost'])
+    >>> G['E']['C']['weight']
+    10
+    >>> G['E']['C']['cost']
+    9
+    >>> edges = pd.DataFrame({'source': [0, 1, 2],
+    ...                       'target': [2, 2, 3],
+    ...                       'weight': [3, 4, 5],
+    ...                       'color': ['red', 'blue', 'blue']})
+    >>> G = nx.from_pandas_edgelist(edges, edge_attr=True)
+    >>> G[0][2]['color']
+    'red'
+
+    """
+    import networkx as nx
+    g = nx.DiGraph()
+
+    # Index of source and target
+    src_i = df.columns.get_loc(source)
+    tar_i = df.columns.get_loc(target)
+    if edge_attr:
+        # If all additional columns requested, build up a list of tuples
+        # [(name, index),...]
+        if edge_attr is True:
+            # Create a list of all columns indices, ignore nodes
+            edge_i = []
+            for i, col in enumerate(df.columns):
+                if col is not source and col is not target:
+                    edge_i.append((col, i))
+        # If a list or tuple of name is requested
+        elif isinstance(edge_attr, (list, tuple)):
+            edge_i = [(i, df.columns.get_loc(i)) for i in edge_attr]
+        # If a string or int is passed
+        else:
+            edge_i = [(edge_attr, df.columns.get_loc(edge_attr)), ]
+
+        # Iteration on values returns the rows as Numpy arrays
+        for row in df.values:
+            s, t = row[src_i], row[tar_i]
+            if g.is_multigraph():
+                g.add_edge(s, t)
+                key = max(g[s][t])  # default keys just count, so max is most recent
+                g[s][t][key].update((i, row[j]) for i, j in edge_i)
+            else:
+                g.add_edge(s, t)
+                g[s][t].update((i, row[j]) for i, j in edge_i)
+
+    # If no column names are given, then just return the edges.
+    else:
+        for row in df.values:
+            g.add_edge(row[src_i], row[tar_i])
+
+    return g
